@@ -9,6 +9,7 @@ train:
   n_way: 5
   n_shot: 5
   n_query: 15
+
 val:
   split: meta-val
   image_size: 84
@@ -39,3 +40,5 @@ optimizer_args:
   lr: 0.001
 
 epoch: 300
+
+load_encoder: save/convnet4/max-va.pth

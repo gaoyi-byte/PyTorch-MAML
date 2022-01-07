@@ -14,12 +14,12 @@ import utils
 
 
 def main(config):
-  random.seed(0)
-  np.random.seed(0)
-  torch.manual_seed(0)
-  torch.cuda.manual_seed(0)
-  # torch.backends.cudnn.deterministic = True
-  # torch.backends.cudnn.benchmark = False
+  random.seed(args.seed)
+  np.random.seed(args.seed)
+  torch.manual_seed(args.seed)
+  torch.cuda.manual_seed(args.seed)
+  torch.backends.cudnn.deterministic = True
+  torch.backends.cudnn.benchmark = False
 
   ##### Dataset #####
 
@@ -30,10 +30,18 @@ def main(config):
     collate_fn=datasets.collate_fn, num_workers=1, pin_memory=True)
 
   ##### Model #####
-
-  ckpt = torch.load(config['load'])
-  inner_args = utils.config_inner_args(config.get('inner_args'))
-  model = models.load(ckpt, load_clf=(not inner_args['reset_classifier']))
+  if config.get('load'):
+    ckpt = torch.load(config['load'])
+    inner_args = utils.config_inner_args(config.get('inner_args'))
+    model = models.load(ckpt, load_clf=(not inner_args['reset_classifier']))
+  elif config.get('load_encoder'):
+    ckpt = torch.load(config['load_encoder'])
+    config['classifier_args'] = config.get('classifier_args') or dict()
+    config['classifier_args']['n_way'] = config['test']['n_way']
+    model = models.load(ckpt,load_clf=False,clf_name=config['classifier'],clf_args=config['classifier_args'])#只读取encoder
+    inner_args = utils.config_inner_args(config.get('inner_args'))
+  #print(inner_args,inner_args['reset_classifier'])
+  print(ckpt['training']['epoch'],ckpt['training']['max_va'])
 
   if args.efficient:
     model.go_efficient()
@@ -52,6 +60,7 @@ def main(config):
   for epoch in range(1, config['epoch'] + 1):
     for data in tqdm(loader, leave=False):
       x_shot, x_query, y_shot, y_query = data
+      #print(x_shot.shape)
       x_shot, y_shot = x_shot.cuda(), y_shot.cuda()
       x_query, y_query = x_query.cuda(), y_query.cuda()
 
@@ -69,6 +78,7 @@ def main(config):
       acc = utils.compute_acc(pred, labels)
       aves_va.update(acc, 1)
       va_lst.append(acc)
+      #print(acc)
 
     print('test epoch {}: acc={:.2f} +- {:.2f} (%)'.format(
       epoch, aves_va.item() * 100, 
@@ -85,6 +95,9 @@ if __name__ == '__main__':
   parser.add_argument('--efficient', 
                       help='if True, enables gradient checkpointing',
                       action='store_true')
+  parser.add_argument('--seed', 
+                      help='auxiliary information', 
+                      type=int, default='666')
   args = parser.parse_args()
   config = yaml.load(open(args.config, 'r'), Loader=yaml.FullLoader)
   

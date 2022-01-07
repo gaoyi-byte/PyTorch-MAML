@@ -7,16 +7,23 @@ import scipy.stats as stats
 
 
 _log_path = None
-
-def set_log_path(path):
+name=''
+def set_log_path(path,retrain=False,args=None):
   global _log_path
   _log_path = path
+  if retrain:
+    global name
+    if args.sim_type=='random':
+      name=args.retrain_type
+    else:
+      name=args.retrain_type+args.task_type
+
 
 
 def log(obj, filename='log.txt'):
   print(obj)
   if _log_path is not None:
-    with open(os.path.join(_log_path, filename), 'a') as f:
+    with open(os.path.join(_log_path, name+filename), 'a') as f:
       print(obj, file=f)
 
 

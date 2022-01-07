@@ -37,5 +37,7 @@ inner_args:
 optimizer: adam
 optimizer_args:
   lr: 0.001
-
+lo
 epoch: 300
+
+load_encoder: save/convnet4/max-va.pth

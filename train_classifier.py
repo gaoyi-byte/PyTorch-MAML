@@ -37,6 +37,24 @@ def mixup_batch_data(x_spt, y_spt, x_qry, y_qry, alpha=1.0, use_cuda=True):
     return mixed_x_spt, y_spt_a, y_spt_b, mixed_x_qry, y_qry_a, y_qry_b, lam
 
 
+def mixup_data(x, y, alpha=1.0, use_cuda=True):
+    '''Returns mixed inputs, pairs of targets, and lambda'''
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size()[0]
+    if use_cuda:
+        index = torch.randperm(batch_size).cuda()
+    else:
+        index = torch.randperm(batch_size)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+
 def main(config):
   random.seed(0)
   np.random.seed(0)
@@ -48,21 +66,10 @@ def main(config):
   ckpt_name = args.name
   if ckpt_name is None:
     ckpt_name = config['encoder']
-    #ckpt_name += '_' + config['dataset'].replace('meta-', '')
-    ckpt_name += '_{}_{}'.format(
-      config['train']['n_way'], config['train']['n_shot'])
   if args.tag is not None:
     ckpt_name += '_' + args.tag
-  
-  if args.mix=='mix':
+  if args.mix:
     ckpt_name += '_mix'
-  elif args.mix=='hmix':
-    ckpt_name += '_hmix'
-
-  if config.get('load_encoder'):
-    ckpt_name += '_re'
-  elif config.get('load'):
-    ckpt_name += '_rec'
   print('保存的路径名',ckpt_name)
 
   ckpt_path = os.path.join('./save', ckpt_name)
@@ -73,25 +80,36 @@ def main(config):
 
   ##### Dataset #####
 
-  # meta-train
+  # train
   train_set = datasets.make(config['dataset'], **config['train'])
-  utils.log('meta-train set: {} (x{}), {}'.format(
-    train_set[0][0].shape, len(train_set), train_set.n_classes))
-  train_loader = DataLoader(
-    train_set, config['train']['n_episode'],
-    collate_fn=datasets.collate_fn, num_workers=1, pin_memory=True)
-
-  # meta-val
+  train_loader = DataLoader(train_set, config['batch_size'], shuffle=True,
+                              num_workers=1, pin_memory=True)
+  utils.log('train dataset: {} (x{}), {}'.format(
+            train_set[0][0].shape, len(train_set),
+            train_set.n_classes))
+  #val
   eval_val = False
   if config.get('val'):
     eval_val = True
     val_set = datasets.make(config['dataset'], **config['val'])
+    val_loader = DataLoader(train_set, config['batch_size'], shuffle=True,
+                                num_workers=1, pin_memory=True)
+    utils.log('val dataset: {} (x{}), {}'.format(
+            val_set[0][0].shape, len(val_set),
+            val_set.n_classes))
+
+  # meta-val
+  meta_val = False
+  if config.get('meta_val'):
+    meta_val = True
+    meta_val_set = datasets.make('meta-'+config['dataset'], **config['meta_val'])
     utils.log('meta-val set: {} (x{}), {}'.format(
-      val_set[0][0].shape, len(val_set), val_set.n_classes))
-    val_loader = DataLoader(
-      val_set, config['val']['n_episode'],
+      val_set[0][0].shape, len(meta_val_set), meta_val_set.n_classes))
+    meta_val_loader = DataLoader(
+      meta_val_set, config['meta_val']['n_episode'],
       collate_fn=datasets.collate_fn, num_workers=1, pin_memory=True)
-  
+
+
   ##### Model and Optimizer #####
 
   inner_args = utils.config_inner_args(config.get('inner_args'))
@@ -99,45 +117,43 @@ def main(config):
     ckpt = torch.load(config['load'])
     config['encoder'] = ckpt['encoder']
     config['encoder_args'] = ckpt['encoder_args']
-    config['classifier'] = ckpt['classifier']
-    config['classifier_args'] = ckpt['classifier_args']
-    model = models.load(ckpt, load_clf=(not inner_args['reset_classifier']))
+
+    config['classifier_args'] = config.get('classifier_args') or dict()
+    config['classifier_args']['n_way'] = config['n_class'] 
+    model = models.load(ckpt,load_clf=False,clf_name=config['classifier'],clf_args=config['classifier_args'])
+
+    if meta_val:
+      config['classifier_args']['n_way'] = config['meta_val']['n_way']
+      meta_model=models.make(config['encoder'], config['encoder_args'],
+                          config['classifier'], config['classifier_args'])
+      meta_model.encoder=model.encoder
+
     optimizer, lr_scheduler = optimizers.load(ckpt, model.parameters())
     start_epoch = ckpt['training']['epoch'] + 1
     max_va = ckpt['training']['max_va']
 
-
-  elif config.get('load_encoder'):
-    ckpt = torch.load(config['load_encoder'])
-    config['encoder'] = ckpt['encoder']
-    config['encoder_args'] = ckpt['encoder_args']
-
-    config['classifier_args'] = config.get('classifier_args') or dict()
-    config['classifier_args']['n_way'] = config['train']['n_way']
-    model = models.load(ckpt,load_clf=False,clf_name=config['classifier'],clf_args=config['classifier_args'])#只读取encoder
-
-    optimizer, lr_scheduler = optimizers.make(
-      config['optimizer'], model.parameters(), **config['optimizer_args'])
-    start_epoch = 1
-    max_va = 0.
   else:
     config['encoder_args'] = config.get('encoder_args') or dict()
     config['classifier_args'] = config.get('classifier_args') or dict()
-    config['encoder_args']['bn_args']['n_episode'] = config['train']['n_episode']
-    config['classifier_args']['n_way'] = config['train']['n_way']
+    config['classifier_args']['n_way'] = config['n_class']
     model = models.make(config['encoder'], config['encoder_args'],
                         config['classifier'], config['classifier_args'])
     optimizer, lr_scheduler = optimizers.make(
       config['optimizer'], model.parameters(), **config['optimizer_args'])
+    if meta_val:
+      config['classifier_args']['n_way'] = config['meta_val']['n_way']
+      meta_model=models.make(config['encoder'], config['encoder_args'],
+                          config['classifier'], config['classifier_args'])
+      meta_model.encoder=model.encoder
+
     start_epoch = 1
     max_va = 0.
 
+
   if args.efficient:
     model.go_efficient()
-
   if config.get('_parallel'):
     model = nn.DataParallel(model)
-
   utils.log('num params: {}'.format(utils.compute_n_params(model)))
   timer_elapsed, timer_epoch = utils.Timer(), utils.Timer()
 
@@ -147,72 +163,52 @@ def main(config):
   # 'ta': meta-train accuracy
   # 'vl': meta-val loss
   # 'va': meta-val accuracy
-  aves_keys = ['tl', 'ta', 'vl', 'va']
+  aves_keys = ['tl', 'ta', 'vl', 'va','mvl','mva']
   trlog = dict()
   for k in aves_keys:
     trlog[k] = []
 
   for epoch in range(start_epoch, config['epoch'] + 1):
     timer_epoch.start()
-    aves = {k: utils.AverageMeter() for k in aves_keys}
+    aves = {k: utils.AverageMeter() for k in aves_keys} 
 
     # meta-train
     model.train()
     writer.add_scalar('lr', optimizer.param_groups[0]['lr'], epoch)
     np.random.seed(epoch)
 
-    for data in tqdm(train_loader, desc='meta-train', leave=False):
-      x_shot, x_query, y_shot, y_query = data
-      x_shot, y_shot = x_shot.cuda(), y_shot.cuda()
-      x_query, y_query = x_query.cuda(), y_query.cuda()
-
-
+    for data in tqdm(train_loader, desc='train', leave=False):
+      x_shot, labels = data
+      x_shot, labels = x_shot.cuda(), labels.cuda()
+      
       if inner_args['reset_classifier']:
         if config.get('_parallel'):
           model.module.reset_classifier()
         else:
           model.reset_classifier()
 
-      if args.mix=='mix':
-        x_shot, y_shot_a, y_shot_b, x_query, y_query_a, y_query_b, lam = mixup_batch_data(x_shot,  y_shot,x_query, y_query,alpha=1.0)
-        logits = model.mix_forward(x_shot, x_query, y_shot_a, y_shot_b, lam,inner_args, meta_train=True)
-        logits = logits.flatten(0, 1)
-        pred = torch.argmax(logits, dim=-1)
+      if args.mix:
+        x_shot, y_shot_a, y_shot_b,lam = mixup_batch_data(x_shot, labels,alpha=1.0)
+        
+        logits = model.cls_forward(x_shot, x_query)
 
-        acc1 = utils.compute_acc(pred, y_query_a.flatten())
-        acc2 = utils.compute_acc(pred, y_query_b.flatten())
+        pred = torch.argmax(logits, dim=-1)
+        acc1 = utils.compute_acc(pred, y_shot_a.flatten())
+        acc2 = utils.compute_acc(pred, y_shot_b.flatten())
         acc=lam*acc1+(1-lam)*acc2
 
-        loss1 = F.cross_entropy(logits, y_query_a.flatten())
-        loss2 = F.cross_entropy(logits, y_query_b.flatten())
+        loss1 = F.cross_entropy(logits,y_shot_a)
+        loss2 = F.cross_entropy(logits,y_shot_b)
         loss=lam*loss1+(1-lam)*loss2
-
-      elif args.mix=='hmix':
-        #x_shot, y_shot_a, y_shot_b, x_query, y_query_a, y_query_b, lam = mixup_batch_data(x_shot,  y_shot,x_query, y_query,alpha=1.0)
-        logits,y_query_a,y_query_b= model.hmix_forward(x_shot, x_query, y_shot,y_query,inner_args, meta_train=True)
-        logits = logits.flatten(0, 1)
-        pred = torch.argmax(logits, dim=-1)
-
-        acc1 = utils.compute_acc(pred, y_query_a.flatten())
-        acc2 = utils.compute_acc(pred, y_query_b.flatten())
-        acc=lam*acc1+(1-lam)*acc2
-
-        loss1 = F.cross_entropy(logits, y_query_a.flatten())
-        loss2 = F.cross_entropy(logits, y_query_b.flatten())
-        loss=lam*loss1+(1-lam)*loss2
-
       else:
-        logits = model(x_shot, x_query, y_shot, inner_args, meta_train=True)
-        #print(logits.shape)
-        logits = logits.flatten(0, 1)
-        labels = y_query.flatten()
+        logits = model.cls_forward(x_shot)
+        #logits = logits.flatten(0, 1)
+        #labels = y_shot.flatten()
+        
         
         pred = torch.argmax(logits, dim=-1)
         acc = utils.compute_acc(pred, labels)
         loss = F.cross_entropy(logits, labels)
-
-
-
 
       #print(loss.item(),acc)
       aves['tl'].update(loss.item(), 1)
@@ -223,13 +219,31 @@ def main(config):
       for param in optimizer.param_groups[0]['params']:
         nn.utils.clip_grad_value_(param, 10)
       optimizer.step()
-
-    # meta-val
+    
     if eval_val:
       model.eval()
       np.random.seed(0)
+      for data in tqdm(train_loader, desc='val', leave=False):
+        x_shot, labels = data
+        x_shot, labels = x_shot.cuda(), labels.cuda()
+        if inner_args['reset_classifier']:
+          if config.get('_parallel'):
+            model.module.reset_classifier()
+          else:
+            model.reset_classifier()
+        logits = model.cls_forward(x_shot)
+        pred = torch.argmax(logits, dim=-1)
+        acc = utils.compute_acc(pred, labels)
+        loss = F.cross_entropy(logits, labels)
+        aves['vl'].update(loss.item(), 1)
+        aves['va'].update(acc, 1)
 
-      for data in tqdm(val_loader, desc='meta-val', leave=False):
+    # meta-val
+    if meta_val:
+      meta_model.eval()
+      np.random.seed(0)
+
+      for data in tqdm(meta_val_loader, desc='meta-val', leave=False):
         x_shot, x_query, y_shot, y_query = data
         x_shot, y_shot = x_shot.cuda(), y_shot.cuda()
         x_query, y_query = x_query.cuda(), y_query.cuda()
@@ -240,15 +254,15 @@ def main(config):
           else:
             model.reset_classifier()
 
-        logits = model(x_shot, x_query, y_shot, inner_args, meta_train=False)
+        logits = meta_model(x_shot, x_query, y_shot, inner_args, meta_train=False)
         logits = logits.flatten(0, 1)
         labels = y_query.flatten()
         
         pred = torch.argmax(logits, dim=-1)
         acc = utils.compute_acc(pred, labels)
         loss = F.cross_entropy(logits, labels)
-        aves['vl'].update(loss.item(), 1)
-        aves['va'].update(acc, 1)
+        aves['mvl'].update(loss.item(), 1)
+        aves['mva'].update(acc, 1)
 
     if lr_scheduler is not None:
       lr_scheduler.step()
@@ -263,15 +277,20 @@ def main(config):
       (epoch - start_epoch + 1) * (config['epoch'] - start_epoch + 1))
 
     # formats output
-    log_str = 'epoch {}, meta-train {:.4f}|{:.4f}'.format(
+    log_str = 'epoch {}, train {:.4f}|{:.4f}'.format(
       str(epoch), aves['tl'], aves['ta'])
-    writer.add_scalars('loss', {'meta-train': aves['tl']}, epoch)
-    writer.add_scalars('acc', {'meta-train': aves['ta']}, epoch)
+    writer.add_scalars('loss', {'train': aves['tl']}, epoch)
+    writer.add_scalars('acc', {'train': aves['ta']}, epoch)
 
     if eval_val:
-      log_str += ', meta-val {:.4f}|{:.4f}'.format(aves['vl'], aves['va'])
-      writer.add_scalars('loss', {'meta-val': aves['vl']}, epoch)
-      writer.add_scalars('acc', {'meta-val': aves['va']}, epoch)
+      log_str += ', val {:.4f}|{:.4f}'.format(aves['vl'], aves['va'])
+      writer.add_scalars('loss', {'val': aves['vl']}, epoch)
+      writer.add_scalars('acc', {'val': aves['va']}, epoch)
+
+    if meta_val:
+      log_str += ', meta-val {:.4f}|{:.4f}'.format(aves['mvl'], aves['mva'])
+      writer.add_scalars('loss', {'meta-val': aves['mvl']}, epoch)
+      writer.add_scalars('acc', {'meta-val': aves['mva']}, epoch)
 
     log_str += ', {} {}/{}'.format(t_epoch, t_elapsed, t_estimate)
     utils.log(log_str)
@@ -284,7 +303,7 @@ def main(config):
 
     training = {
       'epoch': epoch,
-      'max_va': max(max_va, aves['va']),
+      'max_va': max(max_va, aves['va'],aves['mva']),
 
       'optimizer': config['optimizer'],
       'optimizer_args': config['optimizer_args'],
@@ -299,11 +318,6 @@ def main(config):
       'encoder': config['encoder'],
       'encoder_args': config['encoder_args'],
       'encoder_state_dict': model_.encoder.state_dict(),
-
-      'classifier': config['classifier'],
-      'classifier_args': config['classifier_args'],
-      'classifier_state_dict': model_.classifier.state_dict(),
-
       'training': training,
     }
 
@@ -324,7 +338,7 @@ if __name__ == '__main__':
   parser.add_argument('--config', 
                       help='configuration file')
   parser.add_argument('--mix', 
-                       type=str, default='')
+                       action='store_true')
   parser.add_argument('--name', 
                       help='model name', 
                       type=str, default=None)

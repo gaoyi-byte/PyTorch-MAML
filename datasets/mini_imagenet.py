@@ -25,7 +25,8 @@ class MiniImageNet(Dataset):
                  }
     split_tag = split_dict[split]
 
-    split_file = os.path.join(root_path, split_tag + '.pickle')
+    split_file = os.path.join(root_path, 'miniImageNet_category_split_'+split_tag + '.pickle')
+    print(split_file)
     assert os.path.isfile(split_file)
     with open(split_file, 'rb') as f:
       pack = pickle.load(f, encoding='latin1')
@@ -95,11 +96,11 @@ class MetaMiniImageNet(MiniImageNet):
 
   def __getitem__(self, index):
     shot, query = [], []
-    cats = np.random.choice(self.n_classes, self.n_way, replace=False)
+    cats = np.random.choice(self.n_classes, self.n_way, replace=False)#随机选n way
     for c in cats:
       c_shot, c_query = [], []
       idx_list = np.random.choice(
-        self.catlocs[c], self.n_shot + self.n_query, replace=False)
+        self.catlocs[c], self.n_shot + self.n_query, replace=False)#随机选kshot
       shot_idx, query_idx = idx_list[:self.n_shot], idx_list[-self.n_query:]
       for idx in shot_idx:
         c_shot.append(self.transform(self.data[idx]))
