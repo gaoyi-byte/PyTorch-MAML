@@ -1,25 +1,18 @@
+retrain_type='mix'
+config='configs/resnet12/mini-imagenet/5_way_5_shot/retrain.yaml'
+num=10
+update=1
 seed=666
-#retrain_type='mix'
-config='configs/convnet4/mini-imagenet/5_way_5_shot/retrain1k.yaml'
 
-for num in {20,40,50,60,80,100}
-do
-for retrain_type in {'mix','com'}
-do
-echo 'sim_cos',$num,$retrain_type
+
 
 
 for alpha in {0.1,0.2,0.5,1}
 do
-for update in {5,10}
-do
 
-echo 'gc',$num,$retrain_type,$alpha,$update
-done
-done
-
-#random
-echo 'random'
+python retrain.py  --gpu 2 --sim_type gc --retrain_type $retrain_type --num $num --update 5 --alpha $alpha --task_type +- --train_type mix --seed $seed --config=$config&
+python retrain.py  --gpu 3 --sim_type gc --retrain_type $retrain_type --num $num --update 10 --alpha $alpha --task_type + --train_type mix --seed $seed --config=$config&
 
 done
-done
+
+

@@ -7,7 +7,7 @@ import torch.nn as nn
 import numpy as np
 from tqdm import tqdm
 from torch.utils.data import DataLoader
-
+import logging
 import datasets
 import models
 import utils
@@ -23,23 +23,52 @@ def main(config):
 
   ##### Dataset #####
 
-  dataset = datasets.make(config['dataset'], **config['test'])
-  utils.log('meta-test set: {} (x{}), {}'.format(
-    dataset[0][0].shape, len(dataset), dataset.n_classes))
-  loader = DataLoader(dataset, config['test']['n_episode'],
-    collate_fn=datasets.collate_fn, num_workers=1, pin_memory=True)
+  
 
   ##### Model #####
-  if config.get('load'):
+  '''
+  ckpt = torch.load(args.load)
+  inner_args = utils.config_inner_args(config.get('inner_args'))
+  model = models.load(ckpt, load_clf=(not inner_args['reset_classifier']))
+  '''
+  if args.test_type=='com':
     ckpt = torch.load(config['load'])
+    logging.info(config['load'])
     inner_args = utils.config_inner_args(config.get('inner_args'))
     model = models.load(ckpt, load_clf=(not inner_args['reset_classifier']))
-  elif config.get('load_encoder'):
+  elif args.test_type=='mix':
+    ckpt = torch.load(config['mixload'])
+    logging.info(config['mixload'])
+    inner_args = utils.config_inner_args(config.get('inner_args'))
+    model = models.load(ckpt, load_clf=(not inner_args['reset_classifier']))
+  elif args.test_type=='hmix':
+    ckpt = torch.load(config['hmixload'])
+    logging.info(config['hmixload'])
+    inner_args = utils.config_inner_args(config.get('inner_args'))
+    model = models.load(ckpt, load_clf=(not inner_args['reset_classifier']))
+  elif args.test_type=='re':
+    ckpt = torch.load(config['reload'])
+    inner_args = utils.config_inner_args(config.get('inner_args'))
+    model = models.load(ckpt, load_clf=(not inner_args['reset_classifier']))
+  elif args.test_type=='cls':
     ckpt = torch.load(config['load_encoder'])
     config['classifier_args'] = config.get('classifier_args') or dict()
     config['classifier_args']['n_way'] = config['test']['n_way']
     model = models.load(ckpt,load_clf=False,clf_name=config['classifier'],clf_args=config['classifier_args'])#只读取encoder
     inner_args = utils.config_inner_args(config.get('inner_args'))
+  elif args.test_type=='cls_base':
+    ckpt = torch.load(config['base_encoder'])
+    ckpt['encoder']=config['encoder']
+    ckpt['encoder_args'] = config.get('encoder_args') or dict()
+    ckpt['encoder_args']['bn_args']['n_episode'] = config['test']['n_episode']
+
+    config['classifier_args'] = config.get('classifier_args') or dict()
+    config['classifier_args']['n_way'] = config['test']['n_way']
+    model = models.load(ckpt,load_clf=False,clf_name=config['classifier'],clf_args=config['classifier_args'])#只读取encoder
+    inner_args = utils.config_inner_args(config.get('inner_args'))
+  else:
+    raise NotImplementedError
+  
   #print(inner_args,inner_args['reset_classifier'])
   print(ckpt['training']['epoch'],ckpt['training']['max_va'])
 
@@ -49,7 +78,7 @@ def main(config):
   if config.get('_parallel'):
     model = nn.DataParallel(model)
 
-  utils.log('num params: {}'.format(utils.compute_n_params(model)))
+
 
   ##### Evaluation #####
 
@@ -58,6 +87,11 @@ def main(config):
   va_lst = []
 
   for epoch in range(1, config['epoch'] + 1):
+    np.random.seed(epoch)
+    dataset = datasets.make(config['dataset'], **config['test'])
+    loader = DataLoader(dataset, config['test']['n_episode'],
+    collate_fn=datasets.collate_fn, num_workers=1, pin_memory=True)
+
     for data in tqdm(loader, leave=False):
       x_shot, x_query, y_shot, y_query = data
       #print(x_shot.shape)
@@ -83,6 +117,10 @@ def main(config):
     print('test epoch {}: acc={:.2f} +- {:.2f} (%)'.format(
       epoch, aves_va.item() * 100, 
       utils.mean_confidence_interval(va_lst) * 100))
+    logging.info(args)
+    logging.info('test epoch {}: acc={:.2f} +- {:.2f} (%)'.format(
+      epoch, aves_va.item() * 100, 
+      utils.mean_confidence_interval(va_lst) * 100))
 
 
 if __name__ == '__main__':
@@ -96,14 +134,26 @@ if __name__ == '__main__':
                       help='if True, enables gradient checkpointing',
                       action='store_true')
   parser.add_argument('--seed', 
-                      help='auxiliary information', 
+                      help='auxiliary information',  
                       type=int, default='666')
+  parser.add_argument('--test_type', 
+                      help='auxiliary information', 
+                      type=str, default='com')
+  parser.add_argument('--load', 
+                      help='auxiliary information', 
+                      type=str, default='./save/resnet12_5_5/max-va.pth')
   args = parser.parse_args()
   config = yaml.load(open(args.config, 'r'), Loader=yaml.FullLoader)
   
   if len(args.gpu.split(',')) > 1:
     config['_parallel'] = True
     config['_gpu'] = args.gpu
-
+  log_name='save/test/test.log'
+  logging.basicConfig(format=None,
+                        datefmt='%m/%d/%Y %H:%M:%S',
+                        level=logging.INFO,
+                        filename=log_name)
+  logging.info('')
+  
   utils.set_gpu(args.gpu)
   main(config)

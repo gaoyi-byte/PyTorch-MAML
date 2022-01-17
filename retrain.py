@@ -80,6 +80,30 @@ def mixup_in_data(x_spt, y_spt,use_cuda=True, alpha=1.0):  # 对任务内的数�
 
     return x_qry,y_spt.reshape(1,-1)
 
+def params_change_gc(db_test, db,maml,config): 
+
+  inner_args = utils.config_inner_args(config.get('inner_args'))
+  inner_args['n_step']=args.update
+  inner_args['alpha']=args.alpha
+  maml.eval()
+  #计算单个test任务和训练任务的相似度
+  result = torch.zeros((len(db_test.dataset), len(db.dataset)))
+  for step, (x_spt, x_qry,y_spt,  y_qry) in enumerate(tqdm(db_test, desc='test-params', leave=False)):
+    x_spt, y_spt = x_spt.cuda(), y_spt.cuda()
+        #x_qry, y_qry = x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
+    params_test = maml.get_params_change(x_spt, y_spt,inner_args)
+      
+    for step1, (x_spt, x_qry,y_spt,  y_qry) in enumerate(db):
+      x_spt, y_spt, x_qry, y_qry = x_spt.cuda(), y_spt.cuda(), x_qry.cuda(), y_qry.cuda()
+      grad = maml.get_params_change(x_spt, y_spt,inner_args)
+      result[step][step1]=torch.cosine_similarity(grad, params_test,dim=0)
+      # print(result)
+  
+  task = torch.argsort(result,dim=1,descending=True).cpu().numpy()  # 从小到大排
+  csv_name = f"save/retrain/{args.seed}_{config['train']['n_batch']}_{config['test']['n_batch']}/{config['encoder']}/{args.train_type}{args.sim_type}/task_{args.update}_{args.alpha}.csv"
+  pd.DataFrame(task).to_csv(csv_name)
+  #sys.exit()
+  return pd.DataFrame(task)
 
 def params_change(db_test, db,maml,config): 
 
@@ -115,7 +139,6 @@ def params_change(db_test, db,maml,config):
 
   print('计算相似度')
   task = np.zeros((len(db_test.dataset), len(params)))
-  result = np.zeros((len(db_test.dataset), len(params)))
   for step, (x_spt, x_qry,y_spt,  y_qry) in enumerate(tqdm(db_test, desc='test-params', leave=False)):
     x_spt, y_spt = x_spt.cuda(), y_spt.cuda()
         #x_qry, y_qry = x_qry.squeeze(0).to(device), y_qry.squeeze(0).to(device)
@@ -140,8 +163,8 @@ def params_change(db_test, db,maml,config):
   else:
     csv_name = f"save/retrain/{args.seed}_{config['train']['n_batch']}_{config['test']['n_batch']}/{config['encoder']}/{args.train_type}{args.sim_type}/task.csv"
   pd.DataFrame(task).to_csv(csv_name)
+  #sys.exit()
   return pd.DataFrame(task)
-
 
 def main(config):
 
@@ -183,6 +206,9 @@ def main(config):
   if args.train_type=='mix':
     print('调用模型：',config['mixload'])
     ckpt = torch.load(config['mixload'])
+  elif args.train_type=='hmix':
+    print('调用模型：',config['hmixload'])
+    ckpt = torch.load(config['hmixload'])
   else:
     print('调用模型：',config['load'])
     ckpt = torch.load(config['load'])
@@ -212,9 +238,14 @@ def main(config):
       path=f"save/retrain/{args.seed}_{config['train']['n_batch']}_{config['test']['n_batch']}/{config['encoder']}/{args.train_type}{args.sim_type}/task.csv"
     print(path)
     if os.path.exists(path):
+      print('已有',path)
       task = pd.read_csv(path, index_col=0)
     else:
-      task= params_change(test_loader, train_loader,model,config)
+      if config['encoder']=='resnet12' and args.sim_type=='gc':
+        task= params_change_gc(test_loader, train_loader,model,config)
+      else:
+        task= params_change(test_loader, train_loader,model,config)
+  #sys.exit()
   
 
   aves_va_b = utils.AverageMeter()
@@ -296,6 +327,7 @@ def main(config):
         optimizer.step()
 
     elif args.retrain_type=='mix':#训练任务和测试任务的mix
+      x_tmp_query,y_tmp_query=mixup_in_data( x_shot, y_shot )#生成大量的测试集数据。
       for i,task1 in enumerate(train_id) : 
         if inner_args['reset_classifier']:
           if config.get('_parallel'):
@@ -306,12 +338,44 @@ def main(config):
         x_shot_train, y_shot_train = x_shot_train.unsqueeze(0).cuda(), y_shot_train.unsqueeze(0).cuda()
         x_query_train, y_query_train = x_query_train.unsqueeze(0).cuda(), y_query_train.unsqueeze(0).cuda()
 
-        x_tmp_query,y_tmp_query=mixup_in_data( x_shot, y_shot )#生成大量的测试集数据。
+        
         x_mix_spt, x_mix_qry,lam=mixup_task_data(x_shot_train, x_shot,x_query_train,x_tmp_query)#测试任务和训练任务来mix
 
         logits = model.mix_forward(x_mix_spt,x_mix_qry, y_shot_train,  y_shot, lam,inner_args, meta_train=True)
         logits = logits.flatten(0, 1)
         labels = y_query.flatten()
+        loss1 = F.cross_entropy(logits, y_query_train.flatten())
+        loss2 = F.cross_entropy(logits, y_tmp_query.flatten())
+        loss=lam*loss1+(1-lam)*loss2
+        optimizer.zero_grad()
+        loss.backward()
+        for param in optimizer.param_groups[0]['params']:
+          nn.utils.clip_grad_value_(param, 10)
+        optimizer.step()
+
+    elif args.retrain_type=='hmix':#训练任务和测试任务的mix
+      x_tmp_query,y_tmp_query=mixup_in_data( x_shot, y_shot )#生成大量的测试集数据。
+      x_tmp_query=x_tmp_query.reshape(1,-1,x_tmp_query.size(2),x_tmp_query.size(3),x_tmp_query.size(4))
+      y_tmp_query=y_tmp_query.reshape(1,-1)
+
+      for i,task1 in enumerate(train_id) : 
+        if inner_args['reset_classifier']:
+          if config.get('_parallel'):
+            model.module.reset_classifier()
+          else:
+            model.reset_classifier()
+        x_shot_train, x_query_train, y_shot_train, y_query_train = train_loader.dataset[int(task1)]
+        x_shot_train, y_shot_train = x_shot_train.unsqueeze(0).cuda(), y_shot_train.unsqueeze(0).cuda()
+        x_query_train, y_query_train = x_query_train.unsqueeze(0).cuda(), y_query_train.unsqueeze(0).cuda()
+        #x_mix_spt, x_mix_qry,lam=mixup_task_data(x_shot_train, x_shot,x_query_train,x_tmp_query)#测试任务和训练任务来mix
+        x_spt=torch.cat([x_shot_train, x_shot], dim=0)
+        x_qry=torch.cat([x_query_train, x_tmp_query], dim=0)
+        y_spt=torch.cat([y_shot,y_shot_train], dim=0)
+        y_qry=torch.cat([y_query_train,y_tmp_query], dim=0)
+
+        logits,lam,_ = model.hmix_forward(x_spt, x_qry, y_spt,y_qry,inner_args, meta_train=True,retrain=True)
+
+        logits = logits.flatten(0, 1)
         loss1 = F.cross_entropy(logits, y_query_train.flatten())
         loss2 = F.cross_entropy(logits, y_tmp_query.flatten())
         loss=lam*loss1+(1-lam)*loss2

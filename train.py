@@ -189,15 +189,15 @@ def main(config):
 
       elif args.mix=='hmix':
         #x_shot, y_shot_a, y_shot_b, x_query, y_query_a, y_query_b, lam = mixup_batch_data(x_shot,  y_shot,x_query, y_query,alpha=1.0)
-        logits,y_query_a,y_query_b= model.hmix_forward(x_shot, x_query, y_shot,y_query,inner_args, meta_train=True)
+        logits,lam,y_query_b= model.hmix_forward(x_shot, x_query, y_shot,y_query,inner_args, meta_train=True)
         logits = logits.flatten(0, 1)
         pred = torch.argmax(logits, dim=-1)
 
-        acc1 = utils.compute_acc(pred, y_query_a.flatten())
+        acc1 = utils.compute_acc(pred, y_query.flatten())
         acc2 = utils.compute_acc(pred, y_query_b.flatten())
         acc=lam*acc1+(1-lam)*acc2
 
-        loss1 = F.cross_entropy(logits, y_query_a.flatten())
+        loss1 = F.cross_entropy(logits, y_query.flatten())
         loss2 = F.cross_entropy(logits, y_query_b.flatten())
         loss=lam*loss1+(1-lam)*loss2
 
@@ -309,7 +309,8 @@ def main(config):
 
     # 'epoch-last.pth': saved at the latest epoch
     # 'max-va.pth': saved when validation accuracy is at its maximum
-    torch.save(ckpt, os.path.join(ckpt_path, 'epoch-last.pth'))
+    if epoch>100 and epoch%10==0:
+      torch.save(ckpt, os.path.join(ckpt_path, f'epoch{epoch}.pth'))
     torch.save(trlog, os.path.join(ckpt_path, 'trlog.pth'))
 
     if aves['va'] > max_va:
@@ -324,7 +325,7 @@ if __name__ == '__main__':
   parser.add_argument('--config', 
                       help='configuration file')
   parser.add_argument('--mix', 
-                       type=str, default='')
+                       type=str, default='com')
   parser.add_argument('--name', 
                       help='model name', 
                       type=str, default=None)

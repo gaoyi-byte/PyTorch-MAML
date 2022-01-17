@@ -1,20 +1,20 @@
+def convnet4()
+{
+python test.py --config=configs/convnet4/mini-imagenet/5_way_5_shot/test.yaml --seed $1 --test_type com
+python test.py --config=configs/convnet4/mini-imagenet/5_way_5_shot/test.yaml --seed $1 --test_type mix
+python test.py --config=configs/convnet4/mini-imagenet/5_way_5_shot/test.yaml --seed $1 --test_type hmix
+python test.py --config=configs/convnet4/mini-imagenet/5_way_5_shot/test.yaml --seed $1 --test_type cls
+python test.py --config=configs/convnet4/mini-imagenet/5_way_5_shot/test.yaml --seed $1 --test_type re
+}
 
-retrain_type='mix'
-config='configs/convnet4/mini-imagenet/5_way_5_shot/retrain1k.yaml'
-task_type='+'
-num=20
-alpha=0.1
-seed=666
+def resnet12(){
+python test.py --seed 666 --gpu 2 --test_type com --config=configs/resnet12/mini-imagenet/5_way_5_shot/test.yaml  
+python test.py --seed 666 --gpu 2 --test_type mix --config=configs/resnet12/mini-imagenet/5_way_5_shot/test.yaml 
+#python test.py --seed 666 --gpu 2 --test_type hmix --config=configs/resnet12/mini-imagenet/5_way_5_shot/test.yaml
 
-python retrain.py --gpu 0 --sim_type sim_cos --train_type mix  --seed $seed --config=$config&
-python retrain.py  --gpu 0 --sim_type gc --train_type mix --update 1  --config=$config --seed $seed&
 
-for alpha in {0.1,0.2,0.5,1}
-do
-python retrain.py  --gpu 0 --sim_type gc --retrain_type $retrain_type --num $num --update 5 --alpha $alpha --task_type +- --train_type mix --seed $seed --config=$config&
-done
+#python test.py --config=configs/resnet12/mini-imagenet/5_way_5_shot/test.yaml --seed 666 --test_type hmix
+#python test.py --config=configs/resnet12/mini-imagenet/5_way_5_shot/test.yaml --seed 666 --test_type cls
+}
 
-for alpha in {0.1,0.2,0.5,1}
-do
-python retrain.py  --gpu 2 --sim_type gc --retrain_type $retrain_type --num $num --update 10 --alpha $alpha --task_type +- --train_type mix --seed $seed --config=$config&
-done
+resnet12
